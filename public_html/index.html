@@ -123,7 +123,7 @@
 	var clientId = Math.floor((1 + Math.random()) * 0x10000000000000).toString(16).substring(1);
 	var googleAPIKey = "AIzaSyA3OPMy5wNmatBMzndzsvwZ_8UyPHWq9lk";
 	var player;
-	var pusher = new Pusher('337d770f548ea47da124', {cluster: 'eu', encrypted: true, authEndpoint: 'http://sharelive-backend.bh96.uk/index.php',});
+	var pusher = new Pusher('337d770f548ea47da124', {cluster: 'eu', encrypted: true, authEndpoint: 'https://pusher.bh.je/sharelive.php',});
 	var room = false;
 	var surpressPusherPlayPause = false;
 	var surpressPusherVideoEnded = false;
