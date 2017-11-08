@@ -1,0 +1,480 @@
+<!doctype html>
+<html lang="en">
+<head>
+	<meta charset="utf-8">
+	<title>ShareLive</title>
+	<meta name="author" content="Benjamin Howe">
+	<script src="sortable.min.js"></script> <!-- by rubaxa -->
+	<script src="//js.pusher.com/3.1/pusher.min.js"></script>
+	<link rel="stylesheet" href="//maxcdn.bootstrapcdn.com/bootstrap/3.3.7/css/bootstrap.min.css" integrity="sha384-BVYiiSIFeK1dGmJRAkycuHAHRg32OmUcww7on3RYdg4Va+PmSTsz/K68vbdEjh4u" crossorigin="anonymous">
+	<style type="text/css">
+		/* https://css-tricks.com/NetMag/FluidWidthVideo/Article-FluidWidthVideo.php */
+		#youtubeVideoOuter {
+			max-height: 720px;
+			overflow: hidden;
+		}
+		
+		#youtubeVideoInner {
+			position: relative;
+			padding-bottom: 56.25%; /* 16:9 */
+			height: 0;
+			max-width: 1280px;
+			margin: 0 auto;
+		}
+		
+		#youtubeVideoInner iframe {
+			position: absolute;
+			top: 0;
+			left: 0;
+			width: 100%;
+			height: 100%;
+			max-height: 720px;
+		}
+	
+		.video img {
+			float: left;
+			margin: 0 5px 4px 0;
+		}
+		
+		ol#queue {
+			padding-left: 0;
+		}
+		
+		#queue li {
+			clear: both;
+			cursor: move;
+			border: 1px solid #ccc;
+			padding: 5px;
+			margin-bottom: 10px;
+			border-radius: 4px;
+			list-style-type: none;
+			height: 102px;
+			overflow: hidden;
+		}
+		
+		#searchResults .video {
+			height: 90px;
+			margin-bottom: 15px;
+			overflow: hidden;
+		}
+		
+		.videoTextOuter {
+			display: table;
+			height: 100%;
+		}
+		
+		.videoTextInner {
+			vertical-align: middle;
+			display: table-cell;
+			padding-right: 4px;
+		}
+		
+		.form-control {
+			display: inline;
+		}
+		
+		.pager {
+			margin: 10px 0;
+		}
+		
+		.video .btn {
+			float: right;
+			width: 100px;
+			margin-bottom: 4px;
+		}
+	</style>
+</head>
+<body>
+<nav class="navbar navbar-default">
+  <div class="container-fluid">
+    <div class="navbar-header">
+      <a class="navbar-brand" href="/"><span class="glyphicon glyphicon-share-alt" style="color:#337ab7" aria-hidden="true"></span> <span class="glyphicon glyphicon-record" style="color:#d9534f" aria-hidden="true"></span> ShareLive</a>
+    </div>
+      <ul class="nav navbar-nav navbar-right">
+        <li class="active"><a href="/">Home <span class="sr-only">(current)</span></a></li>
+        <li><a href="/about.html">About</a></li>
+        <li><a href="/help.html">Help</a></li>
+      </ul>
+  </div><!-- /.container-fluid -->
+</nav>
+<div class="col-sm-6 col-md-6 col-lg-7">
+	<div id="youtubeVideoOuter"><div id="youtubeVideoInner"><div id="youtubeVideo"><img src="default.jpg" style="width:100%" /></div></div></div>
+	<div id="videoMetaData"></div>
+	<div id="searchBar">
+		<h2>Search</h2>
+		<input id="searchQuery" class="form-control" placeholder="Search" style="width:calc(100% - 80px)" />&nbsp;<button id="searchButton" onclick="submitSearch()" type="button" class="btn btn-default">Search!</button>
+	</div>
+	<div id="searchResults"></div>
+</div>
+<div class="col-sm-6 col-md-6 col-lg-5">
+	<div id="room">
+		<p>You are currently <span id="currentRoom">not in a room</span>.</p>
+		<div id="joinRoom"><input id="joinRoomName" class="form-control" placeholder="Room" style="width:calc(100% - 99px)" />&nbsp;<button id="joinRoomButton" onclick="joinRoom()" type="button" class="btn btn-default">Join Room</button></div>
+		<div id="leaveRoom"></div>
+	</div>
+	<div id="queueOuter">
+		<h2>Queue</h2>
+		<p>Drag & drop to reorder.</p>
+		<ol id="queue"></ol>
+	</div>
+</div>
+
+<script type="text/javascript">
+	var clientId = Math.floor((1 + Math.random()) * 0x10000000000000).toString(16).substring(1);
+	var googleAPIKey = "AIzaSyA3OPMy5wNmatBMzndzsvwZ_8UyPHWq9lk";
+	var player;
+	var pusher = new Pusher('337d770f548ea47da124', {cluster: 'eu', encrypted: true});
+	//var pusher = new Pusher('337d770f548ea47da124', {cluster: 'eu', encrypted: true, authEndpoint: 'http://sharelive-backend.bh96.uk/index.php',});
+	var room = false;
+	var surpressPusherPlayPause = false;
+	var surpressPusherVideoEnded = false;
+	var timeoutIAmHere;
+	var timeoutState;
+	var timeoutStateRequest;
+	var youTubeIframeAPIReady = false;
+	function onYouTubeIframeAPIReady() {
+		youTubeIframeAPIReady = true;
+	}
+	
+	function _init() {
+		// add event listeners
+		document.getElementById("searchQuery").addEventListener("keyup", function (event) {
+			var key = event.which || event.keyCode;
+			if (key === 13) { // 13 is enter
+				submitSearch();
+			}
+		});
+		document.getElementById("joinRoomName").addEventListener("keyup", function (event) {
+			var key = event.which || event.keyCode;
+			if (key === 13) { // 13 is enter
+				joinRoom();
+			}
+		});
+		
+		// initialise the sortable list
+		Sortable.create(queue, {
+			onEnd: function(event) {
+				if (room) {
+					room.trigger("client-changeQueueOrder", {'oldIndex': event.oldIndex, 'newIndex': event.newIndex});
+				}
+			}
+		});
+		
+		// initialise the YouTube player API (see https://developers.google.com/youtube/iframe_api_reference )
+		var tag = document.createElement('script');
+		tag.src = "https://www.youtube.com/iframe_api";
+		var firstScriptTag = document.getElementsByTagName('script')[0];
+		firstScriptTag.parentNode.insertBefore(tag, firstScriptTag);
+	}
+	
+	function addVideoToQueue(id, requestFromPusher) {
+		// uses YouTube data (video list) API (see https://developers.google.com/youtube/v3/docs/videos/list )
+		requestFromPusher = requestFromPusher || false;
+		
+		document.getElementById("queue").innerHTML += "<li class=\"video\" id=\"" + id + "\"></li>";
+		
+		var xhttp = new XMLHttpRequest();
+		xhttp.onreadystatechange = function() {
+			if (this.readyState == 4 && this.status == 200) {	 
+				var videos = JSON.parse(this.responseText);
+				document.getElementById(id).innerHTML += "<img src=\"" + videos.items[0].snippet.thumbnails.default.url + "\" width=\"" + videos.items[0].snippet.thumbnails.default.width + "\" height=\"" + videos.items[0].snippet.thumbnails.default.height + "\" /><button type=\"button\" class=\"btn btn-success\" onclick=\"playVideo('" + id + "')\" style=\"margin-top:10px\"><span class=\"glyphicon glyphicon-play\" aria-hidden=\"true\"></span> Play</button><button type=\"button\" class=\"btn btn-danger\" onclick=\"removeVideoFromQueue('" + id + "')\" style=\"clear:right\"><span class=\"glyphicon glyphicon-remove\" aria-hidden=\"true\"></span> Remove</button><span class=\"videoTextOuter\"><span class=\"videoTextInner\">" + videos.items[0].snippet.title + " (uploaded by " + videos.items[0].snippet.channelTitle + ")</span></span>";
+			}
+		};
+		
+		var url = "https://www.googleapis.com/youtube/v3/videos?part=snippet&id=" + id + "&maxResults=1&key=" + googleAPIKey;
+		xhttp.open("GET", url, true);
+		xhttp.send();
+		
+		if (room && !requestFromPusher) { // if we're in a room and this wasn't a request from pusher
+			room.trigger("client-addVideoToQueue", {'videoId': id});
+		}
+	}
+	
+	function getQueueVideoIds() {
+		var queueArray = new Array();
+		var queueList = document.getElementById('queue');
+		for (var i = 0; i < queueList.childNodes.length; i++){
+			queueArray.push(queueList.childNodes[i].id);
+		}
+		return queueArray;
+	}
+	
+	function getSearchResults(query, pageToken) {
+		// uses YouTube data (search) API (see https://developers.google.com/youtube/v3/docs/search/list )
+		pageToken = pageToken || null;
+		
+		var xhttp = new XMLHttpRequest();
+		xhttp.onreadystatechange = function() {
+			if (this.readyState == 4 && this.status == 200) {	 
+				var videos = JSON.parse(this.responseText);
+				
+				document.getElementById("searchResults").innerHTML = "";
+				
+				if (videos.hasOwnProperty("prevPageToken") || videos.hasOwnProperty("nextPageToken")) {
+					document.getElementById("searchResults").innerHTML += "<ul class=\"pager\" id=\"searchPagerTop\"></ul>";
+				}
+				
+				for (var video in videos.items) {
+					document.getElementById("searchResults").innerHTML += "<div class=\"video\"><img src=\"" + videos.items[video].snippet.thumbnails.default.url + "\" width=\"" + videos.items[video].snippet.thumbnails.default.width + "\" height=\"" + videos.items[video].snippet.thumbnails.default.height + "\" /><button type=\"button\" class=\"btn btn-success\" onclick=\"playVideo('" + videos.items[video].id.videoId + "')\" style=\"margin-top:10px\"><span class=\"glyphicon glyphicon-play\" aria-hidden=\"true\"></span> Play</button><button type=\"button\" class=\"btn btn-primary\" onclick=\"addVideoToQueue('" + videos.items[video].id.videoId + "')\" style=\"clear:right\"><span class=\"glyphicon glyphicon-plus\" aria-hidden=\"true\"></span> Queue </button><span class=\"videoTextOuter\"><span class=\"videoTextInner\">" + videos.items[video].snippet.title + " (uploaded by " + videos.items[video].snippet.channelTitle + ")</span></span></div>";
+				}
+				
+				if (videos.hasOwnProperty("prevPageToken") || videos.hasOwnProperty("nextPageToken")) {
+					document.getElementById("searchResults").innerHTML += "<ul class=\"pager\" id=\"searchPagerBottom\"></ul>";
+				}
+				if (videos.hasOwnProperty("prevPageToken")) {
+					document.getElementById("searchPagerTop").innerHTML += "<li><a href=\"javascript:getSearchResults('" + query + "', '" + videos.prevPageToken + "');\">Previous page</a></li>";
+					document.getElementById("searchPagerBottom").innerHTML += "<li><a href=\"javascript:getSearchResults('" + query + "', '" + videos.prevPageToken + "');\">Previous page</a></li>";
+				}
+				if (videos.hasOwnProperty("nextPageToken")) {	 
+					document.getElementById("searchPagerTop").innerHTML += "<li><a href=\"javascript:getSearchResults('" + query + "', '" + videos.nextPageToken + "');\">Next page</a></li>";
+					document.getElementById("searchPagerBottom").innerHTML += "<li><a href=\"javascript:getSearchResults('" + query + "', '" + videos.nextPageToken + "');\">Next page</a></li>";
+				}
+			}
+		};
+		
+		var url = "https://www.googleapis.com/youtube/v3/search?part=snippet&maxResults=20&q=";
+		url += encodeURIComponent(query);
+		if (pageToken != null) {
+			url += "&pageToken=" + pageToken;
+		}
+		url += "&type=video&videoEmbeddable=true&videoSyndicated=true&key=" + googleAPIKey;
+		xhttp.open("GET", url, true);
+		xhttp.send();
+	}
+	
+	function joinRoom() {
+		var name = document.getElementById("joinRoomName").value;
+		if (name == null || name == "") {
+			alert("Room name cannot be blank!");
+			return false;
+		}
+		
+		room = pusher.subscribe(name);
+		//room = pusher.subscribe("private-" + name);
+		room.bind('pusher:subscription_succeeded', function(members) {
+			room.bind("client-whoIsHere", pusherWhoIsHere);
+			room.bind("client-changeVideo", pusherChangeVideo);
+			room.bind("client-pauseVideo", pusherPauseVideo);
+			room.bind("client-videoEnded", pusherVideoEnded);
+			room.bind("client-addVideoToQueue", pusherAddVideoToQueue);
+			room.bind("client-removeVideoFromQueue", pusherRemoveVideoFromQueue);
+			room.bind("client-changeQueueOrder", pusherChangeQueueOrder); // not yet written
+			
+			room.bind("client-iAmHere", pusherIAmHere);
+			timeoutIAmHere = setTimeout(function(){room.unbind("client-iAmHere", pusherIAmHere);}, 30000);
+			room.trigger('client-whoIsHere', {});
+		});
+		
+		document.getElementById("joinRoomName").removeEventListener("keyup", function (event) {
+			var key = event.which || event.keyCode;
+			if (key === 13) { // 13 is enter
+				joinRoom();
+			}
+		});
+		document.getElementById("joinRoom").innerHTML = "";
+		document.getElementById("currentRoom").innerHTML = "in room \"" + name + "\"";
+		document.getElementById("leaveRoom").innerHTML = "<button id=\"leaveRoomButton\" type=\"button\" onclick=\"leaveRoom('" + name + "')\" class=\"btn btn-danger\"><span class=\"glyphicon glyphicon-off\" aria-hidden=\"true\"></span> Leave Room \"" + name + "\"</button>";
+	}
+	
+	function leaveRoom(name) {
+		pusher.unsubscribe("private-" + name);
+		room = false;
+		document.getElementById("leaveRoom").innerHTML = "";
+		document.getElementById("currentRoom").innerHTML = "not in a room";
+		document.getElementById("joinRoom").innerHTML = "<input id=\"joinRoomName\" class=\"form-control\" placeholder=\"Room\" style=\"width:calc(100% - 99px)\" />&nbsp;<button id=\"joinRoomButton\" onclick=\"joinRoom()\" type=\"button\" class=\"btn btn-default\">Join Room</button>";
+		document.getElementById("joinRoomName").addEventListener("keyup", function (event) {
+			var key = event.which || event.keyCode;
+			if (key === 13) { // 13 is enter
+				joinRoom();
+			}
+		});
+	}
+	
+	function playVideo(id, start, requestFromPusher) {
+		start = start || 0;
+		requestFromPusher = requestFromPusher || false;
+		
+		if (!youTubeIframeAPIReady) {
+			alert("Error: YouTube Iframe API not loaded!");
+			return false;
+		}
+		document.getElementById("youtubeVideoInner").innerHTML = "<div id=\"youtubeVideo\"></div>";
+		player = new YT.Player('youtubeVideo', {
+			videoId: id,
+			playerVars: {
+				start: start,
+				'rel': 0, // disable related videos at the end
+				'controls': 0, // disable controls so the user can't be pesky and seek
+				'showinfo': 0, // hide info because we show it anyway
+				'iv_load_policy': 3 // disable annotations
+			},
+			events: {
+				'onReady': function(event) {surpressPusherPlayPause = true; event.target.playVideo(); setTimeout(function(){surpressPusherPlayPause = false;}, 1000);},
+				'onStateChange': videoStateChange
+			}
+		});
+		
+		if (room && !requestFromPusher) { // if we're in a room and the request hasn't come from pusher
+			room.trigger("client-changeVideo", {'videoId': id});
+		}
+		
+		var getMetaData = new XMLHttpRequest();
+		getMetaData.onreadystatechange = function() {
+			if (this.readyState == 4 && this.status == 200) {	 
+				var videos = JSON.parse(this.responseText);
+				document.getElementById("videoMetaData").innerHTML = "<h2>" + videos.items[0].snippet.title + " (uploaded by " + videos.items[0].snippet.channelTitle + ")</h2>";
+			}
+		};
+		
+		var url = "https://www.googleapis.com/youtube/v3/videos?part=snippet&id=" + id + "&maxResults=1&key=" + googleAPIKey;
+		getMetaData.open("GET", url, true);
+		getMetaData.send();
+	}
+	
+	function pusherAddVideoToQueue(data) {
+		addVideoToQueue(data.videoId, true);
+	}
+	
+	function pusherChangeQueueOrder(data) {
+		if (data.newIndex > data.oldIndex) {
+			data.newIndex++;
+		}
+		document.getElementById('queue').children[data.oldIndex].parentNode.insertBefore(document.getElementById('queue').children[data.oldIndex], document.getElementById('queue').children[data.newIndex]);
+	}
+	
+	function pusherChangeVideo(data) {
+		playVideo(data.videoId, 0, true);
+	}
+	
+	function pusherIAmHere(data) {
+		// clear timeout and unbind
+		clearTimeout(timeoutIAmHere);
+		room.unbind("client-iAmHere", pusherIAmHere);
+		
+		// send state request to specific id
+		room.bind("client-stateRequest", pusherStateRequest);
+		room.trigger("client-stateRequest", {'id': data.id});
+		room.unbind("client-stateRequest", pusherStateRequest);
+		
+		// bind and wait for the state reply
+		room.bind("client-state", pusherState);
+		timeoutState = setTimeout(function(){room.unbind('client-state', pusherState);}, 30000);
+	}
+	
+	function pusherPauseVideo(data) {
+		if (data.action == "pause") {
+			player.pauseVideo();
+		} else if (data.action == "play") {
+			player.playVideo();
+		}
+		surpressPusherPlayPause = true;
+		setTimeout(function(){surpressPusherPlayPause = false;}, 200);
+	}
+	
+	function pusherRemoveVideoFromQueue(data) {
+		removeVideoFromQueue(data.videoId, true);
+	}
+	
+	function pusherState(data) {
+		// clear timeout and unbind
+		clearTimeout(timeoutState);
+		room.unbind("client-state", pusherState);
+		
+		// set the state
+		if (data.videoId) {
+			playVideo(data.videoId, data.videoPosition + 2, true); // add 2 seconds for latency
+		} else { // reset the video area
+			document.getElementById("youtubeVideoInner").innerHTML = "<div id=\"youtubeVideo\"><img src=\"default.jpg\" style=\"width:100%\" /></div>";
+			document.getElementById("videoMetaData").innerHTML = "";
+		}
+		// clear the queue before adding to it
+		document.getElementById('queue').innerHTML = "";
+		for (var i in data.currentQueue) {
+			addVideoToQueue(data.currentQueue[i], true);
+		};
+	}
+	
+	function pusherStateRequest(data) {
+		// clear timeout and unbind
+		clearTimeout(timeoutStateRequest);
+		room.unbind("client-stateRequest", pusherStateRequest);
+		
+		// if the request is addressed to us, send state
+		if (data.id == clientId) {
+			room.bind('client-state', function() {});
+			if (player) {
+				room.trigger('client-state', {'videoId': player.getVideoData()['video_id'], 'videoPosition': Math.round(player.getCurrentTime()), 'currentQueue': getQueueVideoIds()});
+			} else {
+				room.trigger('client-state', {'currentQueue': getQueueVideoIds()});
+			}
+			room.unbind('client-state', function() {});
+		}
+	}
+	
+	function pusherVideoEnded(data) {
+		if (player) {
+			if (player.getVideoData()['video_id'] == data.videoId) { // if we're still on the video that has ended
+				if ((player.getDuration() - player.getCurrentTime()) > 5) { // if that video still has more than 5 seconds to run
+					playVideo(document.getElementById("queue").firstChild.id); // play the next video in the queue
+					removeVideoFromQueue(document.getElementById("queue").firstChild.id); // remove the next video (the one that's now playing) from the queue
+				} else { // if the video has less than 5 seconds to run
+					// surpress the "video ended" message for the next 5 seconds
+					surpressPusherVideoEnded = true;
+					setTimeout(function(){surpressPusherVideoEnded = false;}, 5000);
+				}
+			}
+		}
+	}
+	
+	function pusherWhoIsHere() {
+		// send iAmHere
+		room.bind('client-iAmHere', function() {});
+		room.trigger('client-iAmHere', {'id': clientId});
+		room.unbind('client-iAmHere', function() {});
+		
+		// listen for a stateRequest
+		room.bind('client-stateRequest', pusherStateRequest);
+		timeoutStateRequest = setTimeout(function(){room.unbind('client-stateRequest', pusherStateRequest);}, 30000);
+	}
+	
+	function removeVideoFromQueue(id, requestFromPusher) {
+		requestFromPusher = requestFromPusher || false;
+		document.getElementById("queue").removeChild(document.getElementById(id));
+		if (room && !requestFromPusher) { // if we're in a room and this request didn't come from pusher
+			room.trigger("client-removeVideoFromQueue", {'videoId': id})
+		}
+	}
+	
+	function submitSearch() {
+		var query = document.getElementById("searchQuery").value;
+		if (query == null || query == "") {
+			alert("Query cannot be blank!");
+		} else {
+			getSearchResults(query);
+		}
+	}
+	
+	function videoStateChange(event) {
+		if (event.data == YT.PlayerState.ENDED) {
+			if (room && !surpressPusherVideoEnded) { // if we're in a room and the "video ended" message hasn't been surpressed
+				room.trigger("client-videoEnded", {'videoId': player.getVideoData()['video_id']});
+			}
+			if (document.getElementById("queue").firstChild) {
+				playVideo(document.getElementById("queue").firstChild.id);
+				removeVideoFromQueue(document.getElementById("queue").firstChild.id);
+			}
+		} else if (event.data == YT.PlayerState.PLAYING) {
+			if (room && !surpressPusherPlayPause) {
+				room.trigger("client-pauseVideo", {'action': 'play'});
+			}
+		} else if (event.data == YT.PlayerState.PAUSED) {
+			if (room && !surpressPusherPlayPause) {
+				room.trigger("client-pauseVideo", {'action': 'pause'});
+			}
+		}
+	}
+	
+	window.addEventListener("load", _init); // once the page has loaded, fire our init
+</script>
+</body>
+</html>
